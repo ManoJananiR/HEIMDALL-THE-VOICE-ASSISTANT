@@ -32,9 +32,10 @@ from google_trans_new import google_translator
 from pytesseract import image_to_string
 import pytesseract
 from bs4 import BeautifulSoup
+import secondry as sec
 from googletrans import Translator
 import tkinter as tk
-from tkinter import scrolledtext,Label, Entry, Frame,Button,Canvas,Scrollbar,font,PhotoImage
+from tkinter import scrolledtext,Label, Entry, Frame,Button,Canvas,Scrollbar,font,PhotoImage, Checkbutton, IntVar, Toplevel, messagebox
 import threading
 from PIL import Image, ImageTk,ImageFont,ImageGrab
 import itertools
@@ -58,6 +59,57 @@ logo = tk.PhotoImage(file=r"E:\Desktop assistant\images\Capture.png")
 root.iconphoto(True, logo)
 root.geometry("720x650+300+20")
 root.resizable(False, False)
+
+# Permissions dict: set to False by default; UI allows enabling
+permissions = {
+    'microphone': False,
+    'file_access': False,
+    'screen_record': False,
+    'read_window_text': False,
+    'send_messages': False,
+    'device_info': False,
+    'network_access': True,  # Allow network by default for functionality
+}
+
+# Control for listening thread
+assistant_running = False
+assistant_thread = None
+
+def show_permissions_modal():
+    """Show a modal for initial permissions configuration."""
+    modal = Toplevel(root)
+    modal.title("Permissions")
+    modal.geometry("420x300+400+200")
+    modal.resizable(False, False)
+    modal.grab_set()
+
+    vars_map = {}
+    row = 0
+    for key, default in permissions.items():
+        var = IntVar(value=1 if default else 0)
+        chk = Checkbutton(modal, text=key.replace('_', ' ').title(), variable=var)
+        chk.grid(row=row, column=0, sticky='w', padx=10, pady=6)
+        vars_map[key] = var
+        row += 1
+
+    def apply_and_close():
+        for k, v in vars_map.items():
+            permissions[k] = True if v.get() == 1 else False
+        modal.destroy()
+
+    apply_btn = Button(modal, text='Apply', command=apply_and_close)
+    apply_btn.grid(row=row, column=0, pady=10)
+    modal.focus_force()
+
+def ensure_permission(key: str, description: str) -> bool:
+    """Ensure a permission is granted; ask the user if not."""
+    if permissions.get(key):
+        return True
+    answer = messagebox.askyesno("Permission Request", f"{description}\nGrant '{key.replace('_', ' ').title()}' permission?")
+    if answer:
+        permissions[key] = True
+        return True
+    return False
 
 # Light and Dark Mode Colors
 light_bg = "white"
@@ -150,6 +202,47 @@ root.after(0, update_gif)
 toggle_btn = Button(root, text="Dark Mode 🌙", command=toggle_theme, font=custom_font , padx=10, pady=5, bg="#ddd", fg=light_text, relief="flat")
 toggle_btn.pack(pady=5)
 
+# Assistant control buttons and permission indicator
+control_frame = Frame(root, bg=light_bg)
+control_frame.pack(pady=4)
+
+start_btn = Button(control_frame, text="Start Assistant", font=custom_font, padx=8, pady=4)
+stop_btn = Button(control_frame, text="Stop Assistant", font=custom_font, padx=8, pady=4)
+perm_btn = Button(control_frame, text="Permissions", font=custom_font, padx=8, pady=4)
+status_label = Label(control_frame, text="Status: Idle", bg=light_bg, fg=light_text, font=("Delius", 10, "bold"))
+start_btn.grid(row=0, column=0, padx=6)
+stop_btn.grid(row=0, column=1, padx=6)
+perm_btn.grid(row=0, column=2, padx=6)
+status_label.grid(row=0, column=3, padx=6)
+
+def update_status(text: str):
+    status_label.config(text=f"Status: {text}")
+
+def start_assistant_button_cb():
+    global assistant_running, assistant_thread
+    if assistant_running:
+        talk("Assistant already running.")
+        return
+    if not ensure_permission('microphone', 'Microphone access is required for voice commands'):
+        talk("Microphone permission denied. Cannot start assistant.")
+        return
+    assistant_running = True
+    update_status('Listening')
+    threading.Thread(target=run_assistant, daemon=True).start()
+
+def stop_assistant_button_cb():
+    global assistant_running
+    if not assistant_running:
+        talk("Assistant is not running.")
+        return
+    assistant_running = False
+    update_status('Idle')
+    talk("Assistant stopped.")
+
+start_btn.config(command=start_assistant_button_cb)
+stop_btn.config(command=stop_assistant_button_cb)
+perm_btn.config(command=show_permissions_modal)
+
 # Scrollable Chat Area
 chat_frame = Frame(root, bg=light_bg)
 chat_frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -207,104 +300,9 @@ def take_command():
                 talk("There was an issue with the speech recognition service. Check your internet connection.")
                 return "error"  
     
-exchange_rates = {
-    'USD': 82.0,
-    'INR': 1.0,
-}
+# Amazon utilities and exchange rates are moved to secondry.py
 
-# Amazon domains based on location
-amazon_domains = {
-    'india': 'amazon.in',
-    'mumbai': 'amazon.in',
-    'chennai': 'amazon.in',
-    'america': 'amazon.com',
-    'usa': 'amazon.com',
-    'united states': 'amazon.com',
-    # Add more locations as needed
-}
-
-def get_amazon_domain(location):
-    for loc in amazon_domains:
-        if loc in location:
-            return amazon_domains[loc]
-    return 'amazon.in'  # Default to India if location not found
-
-def get_price_from_amazon(product_name, location):
-    api_key = "bdf3f0ad02a5690191bcae56cf0f4134"  # ScraperAPI key
-    base_url = "https://api.scraperapi.com"
-    amazon_domain = get_amazon_domain(location)
-    target_url = f"https://{amazon_domain}/s?k={product_name.replace(' ', '+')}"
-    scraper_url = f"{base_url}?api_key={api_key}&url={target_url}"
-
-    response = requests.get(scraper_url)
-    soup = BeautifulSoup(response.content, "html.parser")
-
-    price = None
-    try:
-        price = soup.find("span", {"class": "a-offscreen"}).text
-    except AttributeError:
-        talk("Sorry, I couldn't find the price for that item.")
-
-    if price:
-        price = re.sub(r'[^\d.]', '', price)  # Remove non-numeric characters
-        # Convert price to rupees based on location
-        currency = 'USD' if 'amazon.com' in target_url else 'INR'
-        price_in_rupees = float(price) * exchange_rates[currency]
-
-        return price_in_rupees
-    return None
-
-def check_wifi():
-    """Check which Wi-Fi the laptop is connected to and announce it."""
-    wifi_name = None
-
-    if platform.system() == "Windows":
-        try:
-            result = subprocess.check_output(["netsh", "wlan", "show", "interfaces"], encoding="utf-8")
-            for line in result.split("\n"):
-                if "SSID" in line and "BSSID" not in line:
-                    wifi_name = line.split(":")[1].strip()
-                    break
-        except Exception as e:
-            talk(f"Error checking Wi-Fi: {e}")
-            return
-
-    if wifi_name:
-        talk(f"Your laptop is connected to {wifi_name}.")
-    else:
-        talk("Your laptop is not connected to any Wi-Fi.")
-
-def set_volume_by_percentage(percentage):
-    """
-    Sets the system volume to the specified percentage (0 to 100).
-    Returns the actual volume level set in percentage.
-    """
-    devices = AudioUtilities.GetSpeakers()
-    interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-    volume = interface.QueryInterface(IAudioEndpointVolume)
-    
-    # Ensure percentage is within range 0-100
-    scalar = max(0.0, min(percentage / 100.0, 1.0))
-    volume.SetMasterVolumeLevelScalar(scalar, None)
-    
-    # Get actual volume set
-    current_volume = round(volume.GetMasterVolumeLevelScalar() * 100)
-    talk(f"Volume set to {current_volume} percent.")
-    return current_volume
-
-def process_volume_command():
-    """Listens for a volume command and sets the volume accordingly."""
-    command = take_command()
-
-    if command:
-        words = command.split()
-        for word in words:
-            if word.isdigit():  # Check if the word is a number
-                volume_level = int(word)
-                set_volume_by_percentage(volume_level)
-                return
-
-    talk("I did not catch a valid number. Please try again.")
+# Volume and Wi-Fi utilities are moved to secondry.py
 
 def get_split_phone_number():
     while True:
@@ -331,6 +329,9 @@ def get_split_phone_number():
             talk("That doesn't seem like a valid 10-digit number. Let's try again.")
 
 def send_whatsapp_message():
+    if not ensure_permission('send_messages', 'Allow sending messages on your behalf via WhatsApp?'):
+        talk('Permission denied to send messages.')
+        return
     phone_number = get_split_phone_number()
 
     talk("What message should I send?")
@@ -347,6 +348,9 @@ def send_whatsapp_message():
 
 # Read active window content
 def read_active_window_content():
+    if not ensure_permission('read_window_text', 'Allow the assistant to read the visible content of the active window'):
+        talk('Permission denied for reading active window content.')
+        return
     try:
         hwnd = win32gui.GetForegroundWindow()
         window_title = win32gui.GetWindowText(hwnd)
@@ -371,26 +375,7 @@ def read_active_window_content():
         print(f"Error: {e}")
 
 # Function to get device information
-def get_device_information():
-    try:
-        # Get system details
-        system_info = {
-            "System": platform.system(),
-            "Node Name": platform.node(),
-            "Release": platform.release(),
-            "Version": platform.version(),
-            "Machine": platform.machine(),
-            "Processor": platform.processor(),
-            "RAM": f"{round(psutil.virtual_memory().total / (1024 ** 3), 2)} GB"
-        }
-
-        # Read the system details
-        talk("Here is your device information:")
-        for key, value in system_info.items():
-            talk(f"{key}: {value}")
-    except Exception as e:
-        talk("An error occurred while retrieving device information.")
-        print(f"Error: {e}")
+# get_device_information moved to secondry.get_device_information(talk)
 
 recording = False  # Global flag to control recording
 output_file = None  # File name for saving the recording
@@ -429,6 +414,9 @@ def record_screen(file_name):
 # Function to take a screenshot and save with user-provided name
 def take_screenshot():
     try:
+        if not ensure_permission('file_access', 'Allow saving screenshots to your local files'):
+            talk('Permission denied for saving screenshots.')
+            return
         # Ask the user for the file name to save the screenshot
         talk("What name would you like to save the screenshot as?")
         file_name = take_command().strip()
@@ -446,75 +434,11 @@ def take_screenshot():
         print(f"Error taking screenshot: {e}")
 
 # Function to translate text and talk the result
-def translate_text():
-    try:
-        talk("Which word do you want to translate?")
-        word = take_command()
-
-        if not word:
-            return
-
-        talk("To which language should I translate?")
-        language = take_command()
-
-        if not language:
-            return
-
-        talk(f"Translating '{word}' to {language}...")
-
-        # Language codes dictionary
-        lang_codes = {
-            "bengali": "bn", "chinese": "zh-cn", "english": "en", "french": "fr", "german": "de",
-            "greek": "el", "hindi": "hi", "italian": "it", "japanese": "ja", "korean": "ko",
-            "portuguese": "pt", "russian": "ru", "spanish": "es", "tamil": "ta", "turkish": "tr",
-            "hebrew": "iw"
-        }
-
-        lang_code = lang_codes.get(language)
-
-        if not lang_code:
-            talk(f"Sorry, I don't support the language '{language}'. Please try again.")
-            return translate_text()
-
-        # Perform translation using googletrans
-        translator = Translator()
-        translated_word = translator.translate(word, src='auto', dest=lang_code).text
-
-        # talk and print the result
-        talk(f"The translation for '{word}' in {language} is '{translated_word}'.")
-
-    except Exception as e:
-        talk("An error occurred while translating.")
-        print(f"Error: {e}")
+# Moved `translate_text` to secondry.translate_text(take_command, talk)
 # Function to fetch weather information
-def fetch_weather():
-    talk("Please tell me the city name.")
-    city = take_command()
-    if city:
-        api_key = "05dd4d28db225f9c4f1b2f7adeb2a774"  # Replace with your actual OpenWeather API key
-        url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
-        try:
-            response = requests.get(url).json()
-            if "main" in response:
-                temperature = response["main"]["temp"]
-                description = response["weather"][0]["description"]
-                talk(f"The weather in {city} is {description} with a temperature of {temperature} degrees Celsius.")
-            else:
-                talk("I couldn't fetch the weather details. Please try again.")
-        except Exception as e:
-            talk("There was an error fetching the weather details.")
-            print(f"Error fetching weather: {e}")
+# Moved `fetch_weather` to secondry.fetch_weather(take_command, talk)
 # Function to search Wikipedia
-def search_wikipedia(command):
-    topic = command.replace("wikipedia", "").strip()
-    if topic:
-        try:
-            info = wikipedia.summary(topic, sentences=2)
-            talk(info)
-        except wikipedia.exceptions.DisambiguationError:
-            talk("The topic is ambiguous. Please be more specific.")
-        except wikipedia.exceptions.PageError:
-            talk("I couldn't find any page on Wikipedia for that topic.")
+# Moved `search_wikipedia` to secondry.search_wikipedia(command, talk)
             
 def take_spelled_filename():
     talk("Please spell the file name, letter by letter.")
@@ -565,6 +489,9 @@ def open_notepad():
             talk("Invalid response. Please try again later.")
             return
     if file_name:
+        if not ensure_permission('file_access', 'Allow the assistant to save files to your Documents folder'):
+            talk('Permission denied. Not saving the file.')
+            return
         # Fixed directory path where the file will be saved
         save_directory = "C:\\Users\\User\\Documents"
         save_path = os.path.join(save_directory, f"{file_name}.txt")
@@ -607,6 +534,9 @@ def open_word():
     talk("What name would you like to save the document as?")
     file_name = take_command().strip()
     if file_name:
+        if not ensure_permission('file_access', 'Allow the assistant to save files on your device'):
+            talk('Permission denied. Document not saved.')
+            return
         pyautogui.hotkey("ctrl", "s")
         time.sleep(2)
         pyautogui.write(file_name)
@@ -642,6 +572,9 @@ def open_excel():
     talk("What name would you like to save the spreadsheet as?")
     file_name = take_command().strip()
     if file_name:
+        if not ensure_permission('file_access', 'Allow the assistant to save files on your device'):
+            talk('Permission denied. Spreadsheet not saved.')
+            return
         pyautogui.hotkey("ctrl", "s")
         time.sleep(2)
         pyautogui.write(file_name)
@@ -677,6 +610,9 @@ def open_powerpoint():
     talk("What name would you like to save the presentation as?")
     file_name = take_command().strip()
     if file_name:
+        if not ensure_permission('file_access', 'Allow the assistant to save files on your device'):
+            talk('Permission denied. Presentation not saved.')
+            return
         pyautogui.hotkey("ctrl", "s")
         time.sleep(2)
         pyautogui.write(file_name)
@@ -722,75 +658,32 @@ def switch_tab():
     else:
         talk("This application does not support tab switching.")
 
-def fetch_news():
-    try:
-        talk("What topic are you interested in?")
-        topic = take_command().strip()
-        if not topic:
-            talk("You didn't provide a topic. Please try again.")
-            return
+# fetch_news moved to secondry.fetch_news(take_command, talk)
+# check_battery_status moved to secondry.check_battery_status(talk)
 
-        api_key = "74ba339c1205483cbf2d4205c51cd690"  # Replace with your actual API key
-        url = f"https://newsapi.org/v2/everything?q={topic}&language=en&pageSize=5&apiKey={api_key}"
-        print(f"Request URL: {url}")
-
-        response = requests.get(url).json()
-        print(f"Response: {response}")
-
-        if response.get("status") == "error":
-            talk(f"Error fetching news: {response.get('message')}")
-            return
-
-        if response.get("articles"):
-            talk(f"Here are the top news articles on {topic}:")
-            for i, article in enumerate(response["articles"][:5], 1):
-                title = article.get("title", "No title available")
-                description = article.get("description", "No description available")
-                print(f"News {i}: {title} - {description}")
-                talk(f"News {i}: {title}. {description}")
-        else:
-            talk("No news articles found. Please try a different topic.")
-    except Exception as e:
-        talk("There was an error fetching the news.")
-        print(f"Error fetching news: {e}")
-def check_battery_status():
-    """Check battery percentage and charging status."""
-    battery = psutil.sensors_battery()
-    if battery is None:
-        talk("Sorry, I couldn't fetch battery details.")
-        return
-
-    percent = battery.percent
-    charging = battery.power_plugged
-    status = "charging" if charging else "not charging"
-    
-    talk(f"The battery is at {percent} percent and it is currently {status}.")
-
-def refresh_windows():
-    try:
-        pyautogui.press('f5')  # Simulate pressing F5
-        talk("The desktop has been refreshed.")
-        print("Desktop refreshed.")
-    except Exception as e:
-        talk("An error occurred while refreshing the desktop.")
-        print(f"Error refreshing desktop: {e}")
+# refresh_windows moved to secondry.refresh_windows(talk)
 # Function to perform actions based on commands
 def run_assistant():
-     global recording, output_file  # Needed to modify recording status
-     while True:
+     global recording, output_file, assistant_running  # Needed to modify recording status and control loop
+     while assistant_running:
         command = take_command()
+        if not assistant_running:
+            break
         if not command:  # Check if command is None or empty
              continue
             # root.after(100, run_assistant)
             # return  # Return to listening state if no command is detected
         if "refresh windows" in command or "refresh desktop" in command:
-            refresh_windows()
+            sec.refresh_windows(talk)
         elif "charge percentage" in command or "battery status" in command:
-            check_battery_status()
+            sec.check_battery_status(talk)
         elif "time" in command:
             current_time = datetime.datetime.now().strftime('%I:%M %p')
             talk(f"The current time is {current_time}.")
         elif "search" in command:
+            if not ensure_permission('network_access', 'Allow internet access for web searches'):
+                talk('Network permission denied.')
+                continue
             query = command.replace("search", "").strip()
             webbrowser.open(f"https://www.google.com/search?q={query}")
             talk(f"Searching for {query}.")
@@ -805,13 +698,19 @@ def run_assistant():
             talk(f"Playing {song} on YouTube.")
             pywhatkit.playonyt(song)
         elif "Wi-Fi" in command or "wi-fi" in command:
-            check_wifi()
+            if not ensure_permission('device_info', 'Allow reading network interface details'):
+                talk('Permission denied for Wi-Fi access.')
+                continue
+            sec.check_wifi(talk)
         elif "price of" in command:
             parts = command.split(" in ")
             if len(parts) == 2:
                 item_name = parts[0].replace("price of", "").strip()
                 location = parts[1].strip()
-                price = get_price_from_amazon(item_name, location)
+                if not ensure_permission('network_access', 'Allow internet access to fetch price information'):
+                    talk('Network permission denied. Unable to fetch price.')
+                    continue
+                price = sec.get_price_from_amazon(item_name, location, talk)
                 if price:
                     talk(f"The price of {item_name} in {location} is {price} rupees.")
                 else:
@@ -819,30 +718,42 @@ def run_assistant():
             else:
                 talk("Please specify the location for the price.")
         elif "get weather" in command:
-            fetch_weather()
+            if not ensure_permission('network_access', 'Allow internet access to fetch weather'):
+                talk('Network permission denied. Unable to fetch weather.')
+                continue
+            sec.fetch_weather(take_command, talk)
         elif "device information" in command:
-            get_device_information()
+            sec.get_device_information(talk)
         elif "set volume to" in command:
-            process_volume_command()
+            sec.process_volume_command(take_command, talk)
         elif "record screen" in command and not recording:
+            if not ensure_permission('screen_record', 'Allow the assistant to record your screen'):
+                talk('Permission denied to start recording.')
+                continue
             talk("Say the file name to save the recording.")
             file_name = take_command().replace(" ", "_") + ".avi"
             output_file = file_name if file_name.strip() else "screen_recording.avi"
-        # Start screen recording in a new thread
+            # Start screen recording in a new thread
             threading.Thread(target=record_screen, args=(output_file,), daemon=True).start()
         elif "stop" in command and recording:
             recording = False  # Stop recording
             talk("Recording stopped.")
         elif "open google" in command or "open Google" in command or "Open Google" in command:
+            if not ensure_permission('network_access', 'Allow internet access for web searches'):
+                talk('Network permission denied.')
+                continue
             webbrowser.open("https://www.google.com")
             talk("Opening Google.")
         elif "open w3schools" in command or "open W3Schools" in command or "Open W3Schools" in command:
+            if not ensure_permission('network_access', 'Allow internet access for web searches'):
+                talk('Network permission denied.')
+                continue
             webbrowser.open("https://www.w3schools.com/")
             talk("Opening W3Schools.")
         elif "wikipedia" in command:
-            search_wikipedia(command)
+            sec.search_wikipedia(command, talk)
         elif "translate" in command:
-            translate_text()
+            sec.translate_text(take_command, talk)
         elif "take a screenshot" in command:
             take_screenshot()
         elif "where is" in command:
@@ -875,7 +786,10 @@ def run_assistant():
         elif "close powerpoint" in command:
             close_powerpoint()
         elif "news" in command:
-            fetch_news()
+            if not ensure_permission('network_access', 'Allow internet access to fetch news'):
+                talk('Network permission denied. Unable to fetch news.')
+                continue
+            sec.fetch_news(take_command, talk)
         elif "goodbye" in command or "exit" in command:
             talk("Good bye Boss, See you later!")
             root.after(1000, root.destroy)  # Close GUI after message
@@ -886,7 +800,16 @@ def run_assistant():
 
 def start_assistant():
     """Start assistant in a separate thread"""
+    global assistant_running
+    if assistant_running:
+        talk("Assistant already running.")
+        return
+    if not ensure_permission('microphone', 'Microphone access is required for voice commands'):
+        talk("Microphone permission denied. Cannot start assistant.")
+        return
     talk("Hello Boss, how can I assist you now?")
+    assistant_running = True
+    update_status('Listening')
     threading.Thread(target=run_assistant, daemon=True).start()
 
 # Start Assistant After GUI Loads
