@@ -14,6 +14,15 @@ import numpy as np
 from bs4 import BeautifulSoup
 from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 from comtypes import CLSCTX_ALL
+import json
+import logging
+from pathlib import Path
+import shlex
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import subprocess
+import threading
 
 exchange_rates = {
     'USD': 82.0,
@@ -260,3 +269,168 @@ def refresh_windows(talk=None):
         if talk:
             talk("An error occurred while refreshing the desktop.")
         return False
+
+# --- Advanced helpers ---
+APP_DIR = Path.cwd()
+PAGES_DIR = APP_DIR / "copilot_pages"
+PAGES_DIR.mkdir(exist_ok=True)
+SETTINGS_FILE = APP_DIR / "copilot_settings.json"
+WATCHLIST_FILE = APP_DIR / "copilot_watchlist.json"
+
+def save_settings(settings: dict):
+    try:
+        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, indent=2)
+        return True
+    except Exception:
+        logging.exception('Failed to save settings')
+        return False
+
+def load_settings():
+    if not SETTINGS_FILE.exists():
+        return {}
+    try:
+        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        logging.exception('Failed to load settings')
+        return {}
+
+def search_files(query: str, start_dirs=None, extensions=None, max_results=50):
+    """Search filenames under provided start_dirs (defaults to user's home)."""
+    if extensions is None:
+        extensions = ['.txt', '.docx', '.pdf', '.xlsx', '.pptx', '.jpg', '.png']
+    results = []
+    if start_dirs is None:
+        start_dirs = [str(Path.home())]
+    q = query.lower()
+    for start in start_dirs:
+        for root, dirs, files in os.walk(start):
+            for f in files:
+                if len(results) >= max_results:
+                    return results
+                if q in f.lower() and any(f.lower().endswith(ext) for ext in extensions):
+                    results.append(os.path.join(root, f))
+    return results
+
+def set_timer(seconds: int, message: str, talk=None):
+    def _notify():
+        if talk:
+            talk(f"Timer finished: {message}")
+    t = threading.Timer(seconds, _notify)
+    t.daemon = True
+    t.start()
+    return t
+
+def create_page(title: str, content: str):
+    filename = PAGES_DIR / f"{title}.md"
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(content)
+    return str(filename)
+
+def list_pages():
+    return [p.name for p in PAGES_DIR.glob('*.md')]
+
+def edit_page(title: str, new_content: str):
+    filename = PAGES_DIR / f"{title}.md"
+    if not filename.exists():
+        return False
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(new_content)
+    return True
+
+def generate_chart(values, labels=None, filename='chart.png'):
+    try:
+        fig, ax = plt.subplots()
+        if labels:
+            ax.pie(values, labels=labels, autopct='%1.1f%%')
+        else:
+            ax.plot(values)
+        out = APP_DIR / filename
+        fig.savefig(out, bbox_inches='tight')
+        plt.close(fig)
+        return str(out)
+    except Exception:
+        logging.exception('Failed to generate chart')
+        return None
+
+def add_watchlist_item(item: dict):
+    lst = []
+    if WATCHLIST_FILE.exists():
+        try:
+            with open(WATCHLIST_FILE, 'r', encoding='utf-8') as f:
+                lst = json.load(f)
+        except Exception:
+            lst = []
+    lst.append(item)
+    with open(WATCHLIST_FILE, 'w', encoding='utf-8') as f:
+        json.dump(lst, f, indent=2)
+    return True
+
+def get_watchlist():
+    if not WATCHLIST_FILE.exists():
+        return []
+    try:
+        with open(WATCHLIST_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        logging.exception('Failed to read watchlist')
+        return []
+
+def check_watchlist(talk=None):
+    items = get_watchlist()
+    alerts = []
+    for item in items:
+        try:
+            name = item.get('name') or item.get('url')
+            url = item.get('url')
+            target = float(item.get('target'))
+            price = None
+            if url and 'amazon' in url:
+                price = get_price_from_amazon(name, 'india', talk)
+            if price and price <= target:
+                msg = f"Price alert: {name} is now {price} (target {target})"
+                alerts.append(msg)
+                if talk:
+                    talk(msg)
+        except Exception:
+            continue
+    return alerts
+
+def launch_app(app_name: str):
+    mapping = {
+        'notepad': 'notepad.exe',
+        'vscode': r"C:\\Users\\%USERNAME%\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe",
+        'chrome': 'chrome.exe',
+        'word': 'winword.exe',
+        'excel': 'excel.exe',
+        'powerpoint': 'powerpnt.exe'
+    }
+    exe = mapping.get(app_name.lower(), app_name)
+    try:
+        try:
+            os.startfile(exe)
+        except Exception:
+            subprocess.Popen(shlex.split(exe))
+        return True
+    except Exception:
+        logging.exception('Failed to launch app')
+        return False
+
+def send_sms_via_twilio(number: str, msg: str):
+    try:
+        from twilio.rest import Client
+    except Exception:
+        return False, 'twilio library not installed'
+    sid = os.environ.get('TWILIO_SID')
+    token = os.environ.get('TWILIO_AUTH')
+    from_num = os.environ.get('TWILIO_FROM')
+    if not (sid and token and from_num):
+        return False, 'Twilio credentials not configured in environment variables'
+    client = Client(sid, token)
+    try:
+        client.messages.create(body=msg, from_=from_num, to=number)
+        return True, 'Sent'
+    except Exception as e:
+        logging.exception(e)
+        return False, str(e)

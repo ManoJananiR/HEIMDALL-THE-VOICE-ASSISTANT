@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "microphone": true,
+    "file_search": true,
+    "file_access": false,
+    "screen_record": false,
+    "read_window_text": false,
+    "send_messages": false,
+    "voice_activation": false,
+    "device_info": false,
+    "network_access": true
+  },
+  "voice": "Microsoft David Desktop - English (United States)",
+  "auto_open_on_search": true
+}

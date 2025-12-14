@@ -55,25 +55,33 @@ pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tessera
 # GUI Setup
 root = tk.Tk()
 root.title("Heimdall - Voice Assistant")
-logo = tk.PhotoImage(file=r"E:\Desktop assistant\images\Capture.png")
+logo = tk.PhotoImage(file=r"C:\Users\manoj\OneDrive\Desktop\Final yr project\Heimdall\Capture.PNG")
 root.iconphoto(True, logo)
-root.geometry("720x650+300+20")
-root.resizable(False, False)
+root.geometry("1000x800+200+10")
+root.resizable(True, True)
 
 # Permissions dict: set to False by default; UI allows enabling
 permissions = {
     'microphone': False,
+    'file_search': False,
     'file_access': False,
     'screen_record': False,
     'read_window_text': False,
     'send_messages': False,
+    'voice_activation': False,
     'device_info': False,
     'network_access': True,  # Allow network by default for functionality
 }
 
+# UI setting: whether to automatically open Explorer and select first search result
+auto_open_on_search = False
+
 # Control for listening thread
 assistant_running = False
 assistant_thread = None
+engine = pyttsx3.init()
+engine.setProperty('rate', 150)
+engine.setProperty('volume', 1.0)
 
 def show_permissions_modal():
     """Show a modal for initial permissions configuration."""
@@ -95,6 +103,11 @@ def show_permissions_modal():
     def apply_and_close():
         for k, v in vars_map.items():
             permissions[k] = True if v.get() == 1 else False
+        # persist settings
+        try:
+            sec.save_settings({'permissions': permissions})
+        except Exception:
+            pass
         modal.destroy()
 
     apply_btn = Button(modal, text='Apply', command=apply_and_close)
@@ -111,42 +124,27 @@ def ensure_permission(key: str, description: str) -> bool:
         return True
     return False
 
-# Light and Dark Mode Colors
+# UI Colors (simple all-white theme with green chat bubbles)
 light_bg = "white"
-light_text = "#000000"
-dark_bg = "#1e1e1e"
-dark_text = "#ffffff"
-user_color_light = "#C6E0B4"
-assistant_color_light = "#DDEBF7"
-user_color_dark = "#4CAF50"
-assistant_color_dark = "#0c8294"
 root.configure(bg=light_bg)
-custom_font = ("Delius", 12,"bold")
+custom_font = ("Delius", 14, "bold")
 
-dark_mode = False  # Theme flag
-
-def toggle_theme():
-    """Switch between light and dark mode"""
-    global dark_mode
-    dark_mode = not dark_mode
-    new_bg = dark_bg if dark_mode else light_bg
-    root.configure(bg=new_bg)
-    chat_frame.configure(bg=new_bg)
-    canvas.configure(bg=new_bg)
-    scrollable_frame.configure(bg=new_bg)
-    gif_label.configure(bg=new_bg)
-    toggle_btn.configure(bg="black" if dark_mode else "#dddddd", fg=dark_text if dark_mode else light_text, text="Light Mode ☀" if dark_mode else "Dark Mode 🌙")
+# Chat colors (assistant and user both in green hues)
+assistant_color = "#d4f7d4"
+user_color = "#b8f0b8"
+assistant_text_color = "#013220"
+user_text_color = "#013220"
 
 def create_chat_bubble(parent, text, bg_color, fg_color, align_right=False):
     """Creates a simple rectangular message bubble with correct padding."""
     text_label = tk.Label(
         parent,
         text=text,
-        font=("Delius", 12, "bold"),
+        font=custom_font,
         fg=fg_color,
         bg=bg_color,
-        padx=5, pady=6,  # Ensure text padding is consistent
-        wraplength=350,  # Ensures text wraps properly within a max width
+        padx=8, pady=8,  # Ensure text padding is consistent
+        wraplength=600,  # Ensures text wraps properly within a max width
         # relief="flat",  # No border
         bd=0
     )
@@ -158,49 +156,43 @@ def create_chat_bubble(parent, text, bg_color, fg_color, align_right=False):
 
 def add_chat_message(text, sender):
     """Display chat messages with correct padding based on its own text."""
-    bg_color = user_color_dark if sender == "user" and dark_mode else user_color_light if sender == "user" else assistant_color_dark if dark_mode else assistant_color_light
-    fg_color = "#000" if sender == "assistant" else "#333"
+    # Choose green-themed colors
+    if sender == "assistant":
+        bg_color = assistant_color
+        fg_color = assistant_text_color
+        is_user = False
+    else:
+        bg_color = user_color
+        fg_color = user_text_color
+        is_user = True
 
-    is_user = sender == "user"
     bubble = create_chat_bubble(scrollable_frame, text, bg_color, fg_color, align_right=is_user)
-    
+
+    # Make file paths clickable (opens Explorer and selects the file)
+    if isinstance(text, str) and os.path.exists(text) and sender == 'assistant':
+        def _open(e=None, p=text):
+            try:
+                subprocess.Popen(['explorer', '/select,', p])
+            except Exception:
+                try:
+                    os.startfile(os.path.dirname(p))
+                except Exception:
+                    pass
+        bubble.bind('<Button-1>', _open)
+
     # Ensures proper spacing between user & assistant messages
-    bubble.pack(fill="x", padx=(350, 10) if is_user else (10, 350), pady=5)
+    bubble.pack(fill="x", padx=(400, 10) if is_user else (10, 400), pady=6)
 
     # Scroll to the latest message
     canvas.update_idletasks()
     canvas.yview_moveto(1.0)
 
-# Load GIFs for light and dark mode
-light_gif_path = "E:\\Desktop assistant\\images\\light.gif"
-dark_gif_path = "E:\\Desktop assistant\\images\\dark.gif"
-
-gif_image_light = Image.open(light_gif_path)
-gif_image_dark = Image.open(dark_gif_path)
-frames_light, frames_dark = [], []
-
-for frame in range(gif_image_light.n_frames):
-    gif_image_light.seek(frame)
-    gif_image_dark.seek(frame)
-    frames_light.append(ImageTk.PhotoImage(gif_image_light.copy()))
-    frames_dark.append(ImageTk.PhotoImage(gif_image_dark.copy()))
-
-gif_index = 0
-def update_gif():
-    """Animate GIF based on theme"""
-    global gif_index
-    gif_label.config(image=frames_dark[gif_index] if dark_mode else frames_light[gif_index])
-    gif_index = (gif_index + 1) % len(frames_light)
-    root.after(100, update_gif)
-
-gif_label = Label(root, bg=light_bg)
-gif_label.pack(pady=10)
-root.after(0, update_gif)
+# No animated GIF; keep interface clean and static white
 
 # Toggle Button
 
-toggle_btn = Button(root, text="Dark Mode 🌙", command=toggle_theme, font=custom_font , padx=10, pady=5, bg="#ddd", fg=light_text, relief="flat")
-toggle_btn.pack(pady=5)
+# Toggle button removed for simplified white theme
+
 
 # Assistant control buttons and permission indicator
 control_frame = Frame(root, bg=light_bg)
@@ -209,10 +201,15 @@ control_frame.pack(pady=4)
 start_btn = Button(control_frame, text="Start Assistant", font=custom_font, padx=8, pady=4)
 stop_btn = Button(control_frame, text="Stop Assistant", font=custom_font, padx=8, pady=4)
 perm_btn = Button(control_frame, text="Permissions", font=custom_font, padx=8, pady=4)
-status_label = Label(control_frame, text="Status: Idle", bg=light_bg, fg=light_text, font=("Delius", 10, "bold"))
+settings_btn = Button(control_frame, text="Settings", font=custom_font, padx=8, pady=4)
+voice_var = IntVar(value=1 if permissions.get('voice_activation') else 0)
+voice_chk = Checkbutton(control_frame, text='Voice Activation (Hey Copilot)', variable=voice_var)
+status_label = Label(control_frame, text="Status: Idle", bg=light_bg, fg=assistant_text_color, font=("Delius", 11, "bold"))
 start_btn.grid(row=0, column=0, padx=6)
 stop_btn.grid(row=0, column=1, padx=6)
 perm_btn.grid(row=0, column=2, padx=6)
+voice_chk.grid(row=0, column=4, padx=6)
+settings_btn.grid(row=0, column=5, padx=6)
 status_label.grid(row=0, column=3, padx=6)
 
 def update_status(text: str):
@@ -229,6 +226,9 @@ def start_assistant_button_cb():
     assistant_running = True
     update_status('Listening')
     threading.Thread(target=run_assistant, daemon=True).start()
+    # If voice activation is enabled start the wakeword listener too
+    if permissions.get('voice_activation'):
+        start_wakeword_listener()
 
 def stop_assistant_button_cb():
     global assistant_running
@@ -238,10 +238,152 @@ def stop_assistant_button_cb():
     assistant_running = False
     update_status('Idle')
     talk("Assistant stopped.")
+    stop_wakeword_listener()
 
 start_btn.config(command=start_assistant_button_cb)
 stop_btn.config(command=stop_assistant_button_cb)
 perm_btn.config(command=show_permissions_modal)
+settings_btn.config(command=lambda: show_settings_modal())
+voice_chk.config(command=lambda: permissions.update({'voice_activation': bool(voice_var.get())}))
+
+# Quick file search box
+file_search_var = tk.StringVar()
+file_search_entry = Entry(control_frame, textvariable=file_search_var, width=24)
+file_search_btn = Button(control_frame, text='Search Files', font=custom_font, command=lambda: start_file_search())
+file_search_entry.grid(row=1, column=0, columnspan=2, pady=6)
+file_search_btn.grid(row=1, column=2, pady=6)
+
+def start_file_search():
+    q = file_search_var.get().strip()
+    if not q:
+        talk('Please enter a search query in the file search box.')
+        return
+    if not ensure_permission('file_search', 'Allow searching files on your device'):
+        talk('Permission denied for file search.')
+        return
+    results = sec.search_files(q)
+    if results:
+        talk(f'Found {len(results)} results. Showing top 5.')
+        for i, r in enumerate(results[:5]):
+            add_chat_message(r, 'assistant')
+            talk(r)
+        # Optionally open the location of the first result in Explorer
+        if auto_open_on_search:
+            try:
+                subprocess.Popen(['explorer', '/select,', results[0]])
+            except Exception:
+                try:
+                    os.startfile(os.path.dirname(results[0]))
+                except Exception:
+                    pass
+    else:
+        talk('No files found.')
+
+# Wakeword listener controls
+wakeword_thread = None
+wakeword_running = False
+
+def wakeword_listener():
+    global wakeword_running, assistant_running
+    r = sr.Recognizer()
+    mic = None
+    try:
+        mic = sr.Microphone()
+    except Exception:
+        return
+    with mic as source:
+        r.adjust_for_ambient_noise(source, duration=0.5)
+    while wakeword_running:
+        try:
+            with sr.Microphone() as source:
+                audio = r.listen(source, timeout=3, phrase_time_limit=4)
+            text = r.recognize_google(audio, language='en-US').lower()
+            if 'hey copilot' in text or 'hey, copilot' in text:
+                if not assistant_running:
+                    talk('Yes Boss, how can I help you?')
+                    assistant_running = True
+                    update_status('Listening')
+                    threading.Thread(target=run_assistant, daemon=True).start()
+        except sr.WaitTimeoutError:
+            continue
+        except sr.UnknownValueError:
+            continue
+        except Exception:
+            continue
+
+def start_wakeword_listener():
+    global wakeword_thread, wakeword_running
+    if wakeword_running:
+        return
+    if not ensure_permission('microphone', 'Microphone required for wake word detection'):
+        return
+    wakeword_running = True
+    wakeword_thread = threading.Thread(target=wakeword_listener, daemon=True)
+    wakeword_thread.start()
+
+def stop_wakeword_listener():
+    global wakeword_running
+    wakeword_running = False
+
+def show_settings_modal():
+    modal = Toplevel(root)
+    modal.title('Settings')
+    modal.geometry('420x200+420+220')
+    modal.grab_set()
+    # Voice selection
+    available_voices = engine.getProperty('voices')
+    voice_names = [v.name for v in available_voices]
+    current_voice_id = engine.getProperty('voice')
+    current_voice_name = next((v.name for v in available_voices if v.id == current_voice_id), voice_names[0] if voice_names else '')
+    sel_var = tk.StringVar(value=current_voice_name)
+    tk.Label(modal, text='Select Voice:').pack(anchor='w', padx=8, pady=6)
+    voice_menu = tk.OptionMenu(modal, sel_var, *voice_names)
+    voice_menu.pack(anchor='w', padx=8)
+
+    # Auto-open on search option
+    auto_open_var = IntVar(value=1 if auto_open_on_search else 0)
+    auto_chk = Checkbutton(modal, text='Auto-open first file search result', variable=auto_open_var)
+    auto_chk.pack(anchor='w', padx=8, pady=6)
+
+    def apply_and_close():
+        selected = sel_var.get()
+        for v in available_voices:
+            if v.name == selected:
+                engine.setProperty('voice', v.id)
+                break
+        # persist: merge with existing settings
+        try:
+            saved = sec.load_settings() or {}
+            saved.update({'permissions': permissions, 'voice': selected, 'auto_open_on_search': bool(auto_open_var.get())})
+            sec.save_settings(saved)
+            # update runtime flag
+            global auto_open_on_search
+            auto_open_on_search = bool(auto_open_var.get())
+        except Exception:
+            pass
+        modal.destroy()
+
+    tk.Button(modal, text='Apply', command=apply_and_close).pack(pady=10)
+
+# Load saved settings if available
+try:
+    _saved = sec.load_settings()
+    if isinstance(_saved, dict):
+        if 'permissions' in _saved:
+            permissions.update(_saved['permissions'])
+            voice_var.set(1 if permissions.get('voice_activation') else 0)
+            if permissions.get('voice_activation'):
+                start_wakeword_listener()
+        if 'voice' in _saved:
+            # try to apply saved voice by name
+            for v in engine.getProperty('voices'):
+                if v.name == _saved['voice']:
+                    engine.setProperty('voice', v.id)
+                    break
+        if 'auto_open_on_search' in _saved:
+            auto_open_on_search = bool(_saved.get('auto_open_on_search'))
+except Exception:
+    pass
 
 # Scrollable Chat Area
 chat_frame = Frame(root, bg=light_bg)
@@ -681,6 +823,30 @@ def run_assistant():
             current_time = datetime.datetime.now().strftime('%I:%M %p')
             talk(f"The current time is {current_time}.")
         elif "search" in command:
+            # file search or web search
+            if command.startswith('search files for') or command.startswith('find file'):
+                if not ensure_permission('file_search', 'Allow searching files on your device'):
+                    talk('File search permission denied.')
+                    continue
+                q = command.replace('search files for', '').replace('find file', '').strip()
+                results = sec.search_files(q)
+                if results:
+                    talk(f'I found {len(results)} files. Showing top results.')
+                    for i, r in enumerate(results[:5]):
+                        add_chat_message(r, 'assistant')
+                        talk(r)
+                    # Optionally open Explorer to the first match
+                    if auto_open_on_search:
+                        try:
+                            subprocess.Popen(['explorer', '/select,', results[0]])
+                        except Exception:
+                            try:
+                                os.startfile(os.path.dirname(results[0]))
+                            except Exception:
+                                pass
+                else:
+                    talk('No files found matching that query.')
+                continue
             if not ensure_permission('network_access', 'Allow internet access for web searches'):
                 talk('Network permission denied.')
                 continue
@@ -722,6 +888,70 @@ def run_assistant():
                 talk('Network permission denied. Unable to fetch weather.')
                 continue
             sec.fetch_weather(take_command, talk)
+        elif "set timer" in command or "set a timer" in command:
+            # e.g., 'set a timer for 10 minutes'
+            m = re.search(r"(\d+)\s*(second|seconds|minute|minutes|hour|hours)", command)
+            if m:
+                num = int(m.group(1))
+                unit = m.group(2)
+                seconds = num * 60 if 'minute' in unit else num * 3600 if 'hour' in unit else num
+                talk(f'Setting timer for {num} {unit}.')
+                sec.set_timer(seconds, 'Your timer is done', talk)
+            else:
+                talk('For how long should I set the timer?')
+                resp = take_command()
+                m = re.search(r"(\d+)", resp)
+                if m:
+                    seconds = int(m.group(1))
+                    talk(f'Setting timer for {seconds} seconds.')
+                    sec.set_timer(seconds, 'Your timer is done', talk)
+                else:
+                    talk('I could not understand the duration.')
+        elif "create page" in command or "new page" in command:
+            talk('What is the title of the page?')
+            title = take_command().strip()
+            talk('Please say the content of the page now.')
+            content = take_command().strip()
+            path = sec.create_page(title, content)
+            talk(f'Page {title} created at {path}')
+        elif "list pages" in command or "show pages" in command:
+            pages = sec.list_pages()
+            if pages:
+                talk(f'I have {len(pages)} pages:')
+                for p in pages:
+                    talk(p)
+            else:
+                talk('No pages found.')
+        elif "generate chart" in command:
+            talk('Please speak comma separated numbers for the chart.')
+            nums = take_command()
+            try:
+                values = [float(x.strip()) for x in re.split('[, ]+', nums) if x.strip()]
+                outfile = sec.generate_chart(values, filename='chart.png')
+                if outfile:
+                    talk('Chart generated.')
+                    try:
+                        os.startfile(outfile)
+                    except Exception:
+                        pass
+                else:
+                    talk('Failed to generate chart.')
+            except Exception:
+                talk('I could not parse the numbers.')
+        elif "add watchlist" in command or "track price" in command:
+            talk('Please give the product URL or name.')
+            url = take_command().strip()
+            talk('What is your target price?')
+            target = take_command().strip()
+            try:
+                sec.add_watchlist_item({'url': url, 'target': target, 'name': url})
+                talk('Added to watchlist.')
+            except Exception:
+                talk('Failed to add to watchlist.')
+        elif "check watchlist" in command:
+            alerts = sec.check_watchlist(talk)
+            if not alerts:
+                talk('No price alerts right now.')
         elif "device information" in command:
             sec.get_device_information(talk)
         elif "set volume to" in command:
@@ -744,6 +974,13 @@ def run_assistant():
                 continue
             webbrowser.open("https://www.google.com")
             talk("Opening Google.")
+        elif command.startswith('open') or command.startswith('launch'):
+            # e.g., 'open vscode' or 'launch notepad'
+            parts = command.split(maxsplit=1)
+            if len(parts) == 2:
+                app = parts[1]
+                ok = sec.launch_app(app)
+                talk(f'Launching {app}' if ok else f'Unable to launch {app}')
         elif "open w3schools" in command or "open W3Schools" in command or "Open W3Schools" in command:
             if not ensure_permission('network_access', 'Allow internet access for web searches'):
                 talk('Network permission denied.')
@@ -761,7 +998,19 @@ def run_assistant():
             webbrowser.open(f"https://www.google.com/maps/place/{location}")
             talk(f"Here is the location of {location}.")
         elif "send message" in command or "send whatsapp message" in command:
-            send_whatsapp_message()
+            # send via whatsapp or SMS
+            if 'sms' in command or 'send sms' in command:
+                if not ensure_permission('send_messages', 'Allow sending SMS via configured service'):
+                    talk('Permission denied to send messages.')
+                    continue
+                talk('Please say the number to send SMS to, including country code.')
+                number = take_command().strip()
+                talk('What is the message?')
+                message = take_command().strip()
+                ok, info = sec.send_sms_via_twilio(number, message)
+                talk(info if not ok else 'SMS scheduled/sent.')
+            else:
+                send_whatsapp_message()
         elif "read window content" in command:
             read_active_window_content()
         elif "move window" in command or "move" in command:
@@ -792,6 +1041,7 @@ def run_assistant():
             sec.fetch_news(take_command, talk)
         elif "goodbye" in command or "exit" in command:
             talk("Good bye Boss, See you later!")
+            assistant_running = False
             root.after(1000, root.destroy)  # Close GUI after message
             break
         else:
